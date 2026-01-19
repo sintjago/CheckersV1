@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="UTF-8">
+  <title>Multilingual Checkers</title>
+  <style>
+    body {
+      text-align: center;
+      font-family: Arial, sans-serif;
+    }
+    .title {
+      font-size: 24px;
+      font-weight: bold;
+      margin: 20px 0;
+    }
+    .controls {
+      margin-bottom: 10px;
+    }
+    .controls button, .controls select {
+      margin: 5px;
+      padding: 8px 15px;
+      font-size: 16px;
+    }
+    .capture-display {
+      margin: 5px 0;
+      font-size: 18px;
+    }
+    .game-container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+    canvas {
+      border: 2px solid #333;
+      max-width: 90vw;
+      height: auto;
+    }
+    .tracking-table {
+      margin-top: 20px;
+      border-collapse: collapse;
+      width: 90%;
+      max-width: 400px;
+    }
+    .tracking-table, .tracking-table th, .tracking-table td {
+      border: 1px solid #ccc;
+    }
+    .tracking-table th, .tracking-table td {
+      padding: 8px;
+      text-align: center;
+      cursor: pointer;
+    }
+    th {
+      background-color: #f2f2f2;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="title">Multilingual Checkers</div>
+
+  <div class="controls">
+    <select id="languageSelect" onchange="changeLanguage()">
+      <option value="en" selected>English</option>
+      <option value="es">Spanish</option>
+      <option value="zh">Chinese</option>
+      <option value="ru">Russian</option>
+      <option value="hi">Hindi</option>
+      <option value="de">German</option>
+    </select>
+    <button onclick="undoMove()">Undo</button>
+    <button onclick="resetBoard()">Reset</button>
+    <button onclick="toggleSound()" id="soundToggle">Sound: On</button>
+  </div>
+
+  <div class="capture-display">Captured - White: <span id="whiteCaptured">0</span> | Black: <span id="blackCaptured">0</span></div>
+
+  <div class="game-container">
+    <canvas id="checkersboard"></canvas>
+    <table class="tracking-table">
+      <thead>
+        <tr>
+          <th>Player</th>
+          <th>Move</th>
+        </tr>
+      </thead>
+      <tbody id="moveTracking"></tbody>
+    </table>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('checkersboard');
+    const ctx = canvas.getContext('2d');
+    const boardSize = 8;
+    const squarePadding = 20;
+    let squareSize;
+    let whiteCaptured = 0;
+    let blackCaptured = 0;
+    let soundEnabled = true;
+    let selectedSquare = null;
+    let selectedPiece = null;
+    let currentLanguage = 'en';
+
+    const umichBlue = "#00274C";
+    const umichMaize = "#FFCB05";
+    const goldColor = "#FFD700";
+    let synth = window.speechSynthesis;
+
+    const alphabets = {
+      en: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split(''),
+      es: 'ABCDEFGHIJKLMNÑOPQRSTUVWXYZ'.split(''),
+      zh: '我你他我们你们他们她们人日月山水火风地天空中大国小家'.split(''), // Expanded set of Chinese characters
+      ru: 'АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ'.split(''),
+      hi: 'अआइईउऊएऐओऔअंअःकखगघचछजझटठ'.split(''), // Expanded Hindi characters
+      de: 'ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÜß'.split('')
+    };
+
+    let gameHistory = [];
+    let moveList = document.getElementById('moveTracking');
+
+    const initialBoard = [
+      ["", "B", "", "B", "", "B", "", "B"],
+      ["B", "", "B", "", "B", "", "B", ""],
+      ["", "B", "", "B", "", "B", "", "B"],
+      ["", "", "", "", "", "", "", ""],
+      ["", "", "", "", "", "", "", ""],
+      ["R", "", "R", "", "R", "", "R", ""],
+      ["", "R", "", "R", "", "R", "", "R"],
+      ["R", "", "R", "", "R", "", "R", ""]
+    ];
+
+    let board = JSON.parse(JSON.stringify(initialBoard));
+    let pieceLetters = {};
+
+    function resizeCanvas() {
+      canvas.width = Math.min(window.innerWidth * 0.9, 400);
+      canvas.height = canvas.width;
+      squareSize = (canvas.width - 2 * squarePadding) / boardSize;
+      drawBoard();
+    }
+
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    function assignLetters() {
+      let letterIndex = 0;
+      let alphabet = alphabets[currentLanguage];
+
+      // Recycle letters if the alphabet has fewer than the needed characters (48 characters for all pieces)
+      for (let row = 0; row < boardSize; row++) {
+        for (let col = 0; col < boardSize; col++) {
+          if (board[row][col] !== "") {
+            pieceLetters[`${row},${col}`] = alphabet[letterIndex % alphabet.length];
+            letterIndex++;
+          }
+        }
+      }
+    }
+
+    function drawBoard() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.font = "16px Arial";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+
+      for (let row = 0; row < boardSize; row++) {
+        for (let col = 0; col < boardSize; col++) {
+          ctx.fillStyle = (row + col) % 2 === 0 ? umichMaize : umichBlue;
+          ctx.fillRect(col * squareSize + squarePadding, row * squareSize + squarePadding, squareSize, squareSize);
+
+          if (selectedSquare && selectedSquare.row === row && selectedSquare.col === col) {
+            ctx.fillStyle = "rgba(255, 215, 0, 0.5)";
+            ctx.fillRect(col * squareSize + squarePadding, row * squareSize + squarePadding, squareSize, squareSize);
+          }
+
+          const piece = board[row][col];
+          if (piece && !(selectedSquare && selectedSquare.row === row && selectedSquare.col === col)) {
+            const isKing = piece === "RK" || piece === "BK";
+            const color = piece.startsWith("B") ? '#000' : '#FFF';
+            const rimColor = piece.startsWith("B") ? '#FFF' : '#000';
+            const letter = pieceLetters[`${row},${col}`];
+
+            const chipMargin = 6;
+            ctx.beginPath();
+            ctx.arc(col * squareSize + squareSize / 2 + squarePadding, row * squareSize + squareSize / 2 + squarePadding, squareSize / 2 - chipMargin, 0, Math.PI * 2);
+            ctx.fillStyle = rimColor;
+            ctx.fill();
+
+            ctx.beginPath();
+            ctx.arc(col * squareSize + squareSize / 2 + squarePadding, row * squareSize + squareSize / 2 + squarePadding, squareSize / 2 - chipMargin - 2, 0, Math.PI * 2);
+            ctx.fillStyle = color;
+            ctx.fill();
+
+            ctx.font = isKing ? "bold 20px Arial" : "20px Arial";
+            ctx.lineWidth = isKing ? 2 : 1;
+            ctx.strokeStyle = "black";
+            ctx.strokeText(letter, col * squareSize + squareSize / 2 + squarePadding, row * squareSize + squareSize / 2 + squarePadding);
+            ctx.fillStyle = isKing ? goldColor : rimColor;
+            ctx.fillText(letter, col * squareSize + squareSize / 2 + squarePadding, row * squareSize + squareSize / 2 + squarePadding);
+          }
+        }
+      }
+    }
+
+    function playLetterSound(letter) {
+      if (soundEnabled) {
+        synth.cancel();
+        const utterance = new SpeechSynthesisUtterance(letter);
+        utterance.lang = getLanguageCode(currentLanguage);
+        synth.speak(utterance);
+      }
+    }
+
+    function getLanguageCode(lang) {
+      const languageCodes = {
+        en: 'en-US',
+        es: 'es-ES',
+        zh: 'zh-CN',
+        ru: 'ru-RU',
+        hi: 'hi-IN',
+        de: 'de-DE'
+      };
+      return languageCodes[lang] || 'en-US';
+    }
+
+    function toggleSound() {
+      soundEnabled = !soundEnabled;
+      document.getElementById('soundToggle').textContent = `Sound: ${soundEnabled ? 'On' : 'Off'}`;
+    }
+
+    function changeLanguage() {
+      currentLanguage = document.getElementById('languageSelect').value;
+      assignLetters();
+      drawBoard();
+    }
+
+    function saveState() {
+      gameHistory.push({
+        board: JSON.parse(JSON.stringify(board)),
+        whiteCaptured: whiteCaptured,
+        blackCaptured: blackCaptured
+      });
+    }
+
+    function undoMove() {
+      if (gameHistory.length > 0) {
+        const previousState = gameHistory.pop();
+        board = JSON.parse(JSON.stringify(previousState.board));
+        whiteCaptured = previousState.whiteCaptured;
+        blackCaptured = previousState.blackCaptured;
+        moveList.deleteRow(moveList.rows.length - 1);
+        updateCaptureDisplay();
+        drawBoard();
+      }
+    }
+
+    function resetBoard() {
+      board = JSON.parse(JSON.stringify(initialBoard));
+      whiteCaptured = 0;
+      blackCaptured = 0;
+      gameHistory = [];
+      moveList.innerHTML = "";
+      assignLetters();
+      updateCaptureDisplay();
+      drawBoard();
+    }
+
+    function updateCaptureDisplay() {
+      document.getElementById('whiteCaptured').textContent = whiteCaptured;
+      document.getElementById('blackCaptured').textContent = blackCaptured;
+    }
+
+    function trackMove(player, fromRow, fromCol, toRow, toCol) {
+      const from = `${fromCol},${fromRow}`;
+      const to = `${toCol},${toRow}`;
+      const row = moveList.insertRow();
+      const playerCell = row.insertCell(0);
+      const moveCell = row.insertCell(1);
+      playerCell.textContent = player;
+      moveCell.textContent = `${from} to ${to}`;
+
+      moveCell.addEventListener('click', () => playLetterSound(pieceLetters[`${toRow},${toCol}`]));
+    }
+
+    function promoteToKing(row, piece) {
+      if ((piece === 'R' && row === 0) || (piece === 'B' && row === 7)) {
+        return piece + "K";
+      }
+      return piece;
+    }
+
+    let isDragging = false;
+    let dragStart = null;
+
+    // New mouse events for smooth dragging
+    canvas.addEventListener('mousedown', (event) => {
+      const { x, y } = getEventPosition(event);
+      const col = Math.floor((x - squarePadding) / squareSize);
+      const row = Math.floor((y - squarePadding) / squareSize);
+      if (board[row][col]) {
+        selectedSquare = { row, col };
+        selectedPiece = board[row][col];
+        dragStart = { x, y };
+        isDragging = true;
+        playLetterSound(pieceLetters[`${row},${col}`]);
+      }
+    });
+
+    canvas.addEventListener('mousemove', (event) => {
+      if (!isDragging) return;
+      dragStart = getEventPosition(event);
+      drawBoard();
+    });
+
+    canvas.addEventListener('mouseup', (event) => {
+      if (!isDragging) return;
+      const { x, y } = getEventPosition(event);
+      const col = Math.floor((x - squarePadding) / squareSize);
+      const row = Math.floor((y - squarePadding) / squareSize);
+      isDragging = false;
+      if (selectedSquare && isMoveValid(row, col)) {
+        handlePiecePlacement(row, col);
+      }
+      selectedSquare = null;
+      selectedPiece = null;
+      drawBoard();
+    });
+
+    function getEventPosition(event) {
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: (event.clientX - rect.left),
+        y: (event.clientY - rect.top)
+      };
+    }
+
+    function isMoveValid(row, col) {
+      if (!selectedSquare || board[row][col]) return false;
+
+      const rowDiff = row - selectedSquare.row;
+      const colDiff = col - selectedSquare.col;
+
+      if (Math.abs(rowDiff) === 1 && Math.abs(colDiff) === 1) {
+        return true;
+      } else if (Math.abs(rowDiff) === 2 && Math.abs(colDiff) === 2) {
+        const middleRow = (row + selectedSquare.row) / 2;
+        const middleCol = (col + selectedSquare.col) / 2;
+        const jumpedPiece = board[middleRow][middleCol];
+        if (jumpedPiece && jumpedPiece[0] !== selectedPiece[0]) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    function handlePiecePlacement(row, col) {
+      const { row: startRow, col: startCol } = selectedSquare;
+      const rowDiff = row - startRow;
+      const colDiff = col - startCol;
+
+      const middleRow = (startRow + row) / 2;
+      const middleCol = (startCol + col) / 2;
+      const jumpedPiece = board[middleRow]?.[middleCol];
+      const isKing = selectedPiece.includes("K");
+
+      if (Math.abs(rowDiff) === 1 && Math.abs(colDiff) === 1) {
+        board[row][col] = promoteToKing(row, selectedPiece);
+        board[startRow][startCol] = "";
+
+        pieceLetters[`${row},${col}`] = pieceLetters[`${startRow},${startCol}`];
+        delete pieceLetters[`${startRow},${startCol}`];
+
+        trackMove(isKing ? "King " + (selectedPiece.startsWith("B") ? "Black" : "White") : (selectedPiece === "B" ? "Black" : "White"), startRow, startCol, row, col);
+
+      } else if (Math.abs(rowDiff) === 2 && Math.abs(colDiff) === 2 && jumpedPiece && jumpedPiece[0] !== selectedPiece[0]) {
+        board[row][col] = promoteToKing(row, selectedPiece);
+        board[startRow][startCol] = "";
+        board[middleRow][middleCol] = "";
+
+        if (jumpedPiece[0] === "B") blackCaptured++;
+        else if (jumpedPiece[0] === "R") whiteCaptured++;
+
+        pieceLetters[`${row},${col}`] = pieceLetters[`${startRow},${startCol}`];
+        delete pieceLetters[`${startRow},${startCol}`];
+        delete pieceLetters[`${middleRow},${middleCol}`];
+
+        updateCaptureDisplay();
+        trackMove(isKing ? "King " + (selectedPiece.startsWith("B") ? "Black" : "White") : (selectedPiece === "B" ? "Black" : "White"), startRow, startCol, row, col);
+      }
+
+      selectedPiece = null;
+      drawBoard();
+    }
+
+    assignLetters();
+    drawBoard();
+  </script>
+
+</body>
+</html>

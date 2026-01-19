@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>日本語のチェッカー</title>
+  <style>
+    body {
+      text-align: center;
+      font-family: Arial, sans-serif;
+    }
+    .title {
+      font-size: 24px;
+      font-weight: bold;
+      margin: 20px 0;
+    }
+    .controls {
+      margin-bottom: 10px;
+    }
+    .controls button {
+      margin: 5px;
+      padding: 8px 15px;
+      font-size: 16px;
+    }
+    .capture-display {
+      margin: 5px 0;
+      font-size: 18px;
+    }
+    .game-container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+    canvas {
+      border: 2px solid #333;
+      max-width: 90vw;
+      height: auto;
+    }
+    #instructions {
+      font-size: 16px;
+      margin-top: 15px;
+      margin-bottom: 10px;
+      white-space: pre-line;
+      max-width: 440px;
+    }
+    .tracking-table {
+      width: 100%;
+      max-width: 440px;
+      margin: 0 auto;
+      border-collapse: collapse;
+      table-layout: auto;
+    }
+    .tracking-table, .tracking-table th, .tracking-table td {
+      border: 1px solid #ccc;
+    }
+    .tracking-table th, .tracking-table td {
+      padding: 5px;
+      text-align: center;
+      word-wrap: break-word;
+    }
+    th {
+      background-color: #f2f2f2;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="title">日本語のチェッカー</div>
+
+  <div class="controls">
+    <button onclick="undoMove()">元に戻す</button>
+    <button onclick="resetBoard()">リセット</button>
+    <button onclick="toggleSound()" id="soundToggle">サウンド：オン</button>
+  </div>
+
+  <div class="capture-display">取った駒 - 白: <span id="whiteCaptured">0</span> | 黒: <span id="blackCaptured">0</span></div>
+
+  <div class="game-container">
+    <canvas id="checkersboard"></canvas>
+
+    <p id="instructions">
+      駒をクリックしてドラッグして移動します。取りは自動です。
+      飛び越えが可能な場合は必ず行う必要があります。
+    </p>
+
+    <table class="tracking-table">
+      <thead>
+        <tr>
+          <th>プレイヤー</th>
+          <th>動き</th>
+          <th>駒</th>
+          <th>取った駒</th>
+        </tr>
+      </thead>
+      <tbody id="moveTracking"></tbody>
+    </table>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('checkersboard');
+    const ctx = canvas.getContext('2d');
+    const boardSize = 8;
+    const squarePadding = 20;
+    let squareSize;
+    let whiteCaptured = 0;
+    let blackCaptured = 0;
+    let soundEnabled = true;
+    let selectedSquare = null;
+    let selectedPiece = null;
+    let currentPlayer = 'R';
+    let mustContinueJump = false;
+
+    const umichBlue = "#00274C";
+    const umichMaize = "#FFCB05";
+    const goldColor = "#FFD700";
+    let synth = window.speechSynthesis;
+
+    const katakana = 'アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン'.split('');
+    let pieceLetters = {};
+    let gameHistory = [];
+    let moveList = document.getElementById('moveTracking');
+
+    const initialBoard = [
+      ["", "B", "", "B", "", "B", "", "B"],
+      ["B", "", "B", "", "B", "", "B", ""],
+      ["", "B", "", "B", "", "B", "", "B"],
+      ["", "", "", "", "", "", "", ""],
+      ["", "", "", "", "", "", "", ""],
+      ["R", "", "R", "", "R", "", "R", ""],
+      ["", "R", "", "R", "", "R", "", "R"],
+      ["R", "", "R", "", "R", "", "R", ""]
+    ];
+
+    let board = JSON.parse(JSON.stringify(initialBoard));
+
+    function resizeCanvas() {
+      canvas.width = Math.min(window.innerWidth * 0.9, 400);
+      canvas.height = canvas.width;
+      squareSize = (canvas.width - 2 * squarePadding) / boardSize;
+      drawBoard();
+    }
+
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    function assignLetters() {
+      let letterIndex = 0;
+      for (let row = 0; row < boardSize; row++) {
+        for (let col = 0; col < boardSize; col++) {
+          if (board[row][col] !== "") {
+            pieceLetters[`${row},${col}`] = katakana[letterIndex % katakana.length];
+            letterIndex++;
+          }
+        }
+      }
+    }
+
+    function drawBoard() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.font = "16px Arial";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+
+      for (let row = 0; row < boardSize; row++) {
+        for (let col = 0; col < boardSize; col++) {
+          ctx.fillStyle = (row + col) % 2 === 0 ? umichMaize : umichBlue;
+          ctx.fillRect(col * squareSize + squarePadding, row * squareSize + squarePadding, squareSize, squareSize);
+
+          if (selectedSquare && selectedSquare.row === row && selectedSquare.col === col) {
+            ctx.fillStyle = "rgba(255, 215, 0, 0.5)";
+            ctx.fillRect(col * squareSize + squarePadding, row * squareSize + squarePadding, squareSize, squareSize);
+          }
+
+          const piece = board[row][col];
+          if (piece && !(selectedSquare && selectedSquare.row === row && selectedSquare.col === col)) {
+            const isKing = piece === "RK" || piece === "BK";
+            const color = piece.startsWith("B") ? '#000' : '#FFF';
+            const rimColor = piece.startsWith("B") ? '#FFF' : '#000';
+            const letter = pieceLetters[`${row},${col}`];
+
+            const chipMargin = 6;
+            ctx.beginPath();
+            ctx.arc(col * squareSize + squareSize / 2 + squarePadding, row * squareSize + squareSize / 2 + squarePadding, squareSize / 2 - chipMargin, 0, Math.PI * 2);
+            ctx.fillStyle = rimColor;
+            ctx.fill();
+
+            ctx.beginPath();
+            ctx.arc(col * squareSize + squareSize / 2 + squarePadding, row * squareSize + squareSize / 2 + squarePadding, squareSize / 2 - chipMargin - 2, 0, Math.PI * 2);
+            ctx.fillStyle = color;
+            ctx.fill();
+
+            ctx.font = isKing ? "bold 20px Arial" : "20px Arial";
+            ctx.lineWidth = isKing ? 2 : 1;
+            ctx.strokeStyle = "black";
+            ctx.strokeText(letter, col * squareSize + squareSize / 2 + squarePadding, row * squareSize + squareSize / 2 + squarePadding);
+            ctx.fillStyle = isKing ? goldColor : rimColor;
+            ctx.fillText(letter, col * squareSize + squareSize / 2 + squarePadding, row * squareSize + squareSize / 2 + squarePadding);
+          }
+        }
+      }
+    }
+
+    function playLetterSound(letter) {
+      if (soundEnabled && letter) {
+        synth.cancel();
+        const utterance = new SpeechSynthesisUtterance(letter);
+        utterance.lang = 'ja-JP';
+        synth.speak(utterance);
+      }
+    }
+
+    function speak(text) {
+      if (soundEnabled) {
+        synth.cancel();
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.lang = 'ja-JP';
+        synth.speak(utterance);
+      }
+    }
+
+    function toggleSound() {
+      soundEnabled = !soundEnabled;
+      document.getElementById('soundToggle').textContent = `サウンド：${soundEnabled ? 'オン' : 'オフ'}`;
+    }
+
+    function saveState() {
+      gameHistory.push({
+        board: JSON.parse(JSON.stringify(board)),
+        whiteCaptured,
+        blackCaptured,
+        currentPlayer
+      });
+    }
+
+    function undoMove() {
+      if (gameHistory.length > 0) {
+        const previous = gameHistory.pop();
+        board = JSON.parse(JSON.stringify(previous.board));
+        whiteCaptured = previous.whiteCaptured;
+        blackCaptured = previous.blackCaptured;
+        currentPlayer = previous.currentPlayer;
+        moveList.deleteRow(moveList.rows.length - 1);
+        updateCaptureDisplay();
+        drawBoard();
+      }
+    }
+
+    function resetBoard() {
+      board = JSON.parse(JSON.stringify(initialBoard));
+      whiteCaptured = 0;
+      blackCaptured = 0;
+      gameHistory = [];
+      moveList.innerHTML = "";
+      currentPlayer = 'R';
+      assignLetters();
+      updateCaptureDisplay();
+      drawBoard();
+    }
+
+    function updateCaptureDisplay() {
+      document.getElementById('whiteCaptured').textContent = whiteCaptured;
+      document.getElementById('blackCaptured').textContent = blackCaptured;
+    }
+
+    function trackMove(player, fromRow, fromCol, toRow, toCol, movedLetter, capturedLetter = "") {
+      const from = `${fromCol},${fromRow}`;
+      const to = `${toCol},${toRow}`;
+      const row = moveList.insertRow();
+      row.insertCell(0).textContent = player;
+
+      const moveCell = row.insertCell(1);
+      moveCell.textContent = `${from} → ${to}`;
+      moveCell.addEventListener("click", () => playLetterSound(movedLetter));
+
+      const pieceCell = row.insertCell(2);
+      pieceCell.textContent = movedLetter;
+      pieceCell.addEventListener("click", () => playLetterSound(movedLetter));
+
+      const capturedCell = row.insertCell(3);
+      capturedCell.textContent = capturedLetter;
+      if (capturedLetter) {
+        capturedCell.addEventListener("click", () => playLetterSound(capturedLetter));
+        speak(`キャプチャー ${capturedLetter}`);
+      }
+    }
+
+    function promoteToKing(row, piece, letter) {
+      if ((piece === 'R' && row === 0) || (piece === 'B' && row === 7)) {
+        speak(`王に昇格 ${letter}`);
+        return piece + "K";
+      }
+      return piece;
+    }
+
+    function getPlayerName(piece) {
+      return (piece.includes("K") ? "王 " : "") + (piece.startsWith("B") ? "黒" : "白");
+    }
+
+    function hasAdditionalJump(row, col, piece) {
+      const directions = [[-2, -2], [-2, 2], [2, -2], [2, 2]];
+      for (let [dr, dc] of directions) {
+        const newRow = row + dr;
+        const newCol = col + dc;
+        const midRow = row + dr / 2;
+        const midCol = col + dc / 2;
+        if (
+          newRow >= 0 && newRow < 8 && newCol >= 0 && newCol < 8 &&
+          board[newRow][newCol] === "" &&
+          board[midRow][midCol] &&
+          board[midRow][midCol][0] !== piece[0]
+        ) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    function getEventPosition(e) {
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: e.clientX - rect.left,
+        y: e.clientY - rect.top
+      };
+    }
+
+    canvas.addEventListener('mousedown', e => {
+      const { x, y } = getEventPosition(e);
+      const col = Math.floor((x - squarePadding) / squareSize);
+      const row = Math.floor((y - squarePadding) / squareSize);
+      const piece = board[row]?.[col];
+      if (piece && piece.startsWith(currentPlayer)) {
+        selectedSquare = { row, col };
+        selectedPiece = piece;
+        playLetterSound(pieceLetters[`${row},${col}`]);
+      }
+    });
+
+    canvas.addEventListener('mouseup', e => {
+      const { x, y } = getEventPosition(e);
+      const col = Math.floor((x - squarePadding) / squareSize);
+      const row = Math.floor((y - squarePadding) / squareSize);
+      if (selectedSquare && isMoveValid(row, col)) {
+        saveState();
+        handlePiecePlacement(row, col);
+      }
+      selectedSquare = null;
+      selectedPiece = null;
+      drawBoard();
+    });
+
+    function isMoveValid(row, col) {
+      if (!selectedSquare || board[row][col]) return false;
+      const rowDiff = row - selectedSquare.row;
+      const colDiff = col - selectedSquare.col;
+      if (Math.abs(rowDiff) === 1 && Math.abs(colDiff) === 1 && !mustContinueJump) return true;
+      if (Math.abs(rowDiff) === 2 && Math.abs(colDiff) === 2) {
+        const midRow = (row + selectedSquare.row) / 2;
+        const midCol = (col + selectedSquare.col) / 2;
+        const jumped = board[midRow][midCol];
+        return jumped && jumped[0] !== selectedPiece[0];
+      }
+      return false;
+    }
+
+    function handlePiecePlacement(row, col) {
+      const { row: sr, col: sc } = selectedSquare;
+      const rowDiff = row - sr;
+      const colDiff = col - sc;
+      const midRow = (row + sr) / 2;
+      const midCol = (col + sc) / 2;
+      const jumpedPiece = board[midRow]?.[midCol];
+      const isKing = selectedPiece.includes("K");
+      const movingLetter = pieceLetters[`${sr},${sc}`];
+
+      if (Math.abs(rowDiff) === 1 && Math.abs(colDiff) === 1 && !mustContinueJump) {
+        board[row][col] = promoteToKing(row, selectedPiece, movingLetter);
+        board[sr][sc] = "";
+        pieceLetters[`${row},${col}`] = movingLetter;
+        delete pieceLetters[`${sr},${sc}`];
+        trackMove(getPlayerName(selectedPiece), sr, sc, row, col, movingLetter);
+        currentPlayer = currentPlayer === 'R' ? 'B' : 'R';
+      } else if (Math.abs(rowDiff) === 2 && Math.abs(colDiff) === 2 && jumpedPiece && jumpedPiece[0] !== selectedPiece[0]) {
+        board[row][col] = promoteToKing(row, selectedPiece, movingLetter);
+        board[sr][sc] = "";
+        board[midRow][midCol] = "";
+        if (jumpedPiece[0] === "B") blackCaptured++;
+        else whiteCaptured++;
+        pieceLetters[`${row},${col}`] = movingLetter;
+        trackMove(getPlayerName(selectedPiece), sr, sc, row, col, movingLetter, pieceLetters[`${midRow},${midCol}`]);
+        delete pieceLetters[`${sr},${sc}`];
+        delete pieceLetters[`${midRow},${midCol}`];
+        updateCaptureDisplay();
+        if (hasAdditionalJump(row, col, selectedPiece)) {
+          selectedSquare = { row, col };
+          selectedPiece = board[row][col];
+          mustContinueJump = true;
+          return;
+        } else {
+          mustContinueJump = false;
+          currentPlayer = currentPlayer === 'R' ? 'B' : 'R';
+        }
+      }
+    }
+
+    assignLetters();
+    drawBoard();
+  </script>
+
+</body>
+</html>
